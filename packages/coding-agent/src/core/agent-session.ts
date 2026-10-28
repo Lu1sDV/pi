@@ -32,6 +32,7 @@ import {
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import { contentText, getCurrentSystemMessage, getCurrentTools, retryDelayMs } from "@earendil-works/pi-ai";
+import { getDefaultMaxTokens } from "@earendil-works/pi-ai/api/simple-options";
 import type {
 	AssistantMessage,
 	AuthResult,
@@ -3040,8 +3041,8 @@ export class AgentSession {
 		}
 
 		// Automatic cases 1 and 2: context overflow.
-		// A length stop is recoverable when output ended below the model's original desired limit,
-		// independent of the configured context size or any context-clamped provider request limit.
+		// A length stop is recoverable when output ended below the default desired output budget,
+		// including thinking but before context-based clamping, not the model's advertised capacity.
 		const currentProjection = this.sessionManager.buildSessionProjection();
 		const assistantEntryId = this._findPersistedMessageEntryId(assistantMessage);
 		const assistantIsProjected =
@@ -3071,7 +3072,16 @@ export class AgentSession {
 			((explicitOverflow && assistantRetainedForExplicitRecovery) ||
 				(assistantUsageMatchesProjection && isContextOverflow(assistantMessage, contextWindow)));
 		const recoverableLength =
-			sameModel && assistantIsProjected && isRecoverableLength(assistantMessage, messageModel.maxTokens);
+			sameModel &&
+			assistantIsProjected &&
+			isRecoverableLength(
+				assistantMessage,
+				getDefaultMaxTokens(
+					messageModel,
+					assistantMessage.thinkingLevel ?? this.thinkingLevel,
+					this.agent.thinkingBudgets,
+				),
+			);
 		if (contextOverflow || recoverableLength) {
 			const willRetry = assistantMessage.stopReason !== "stop";
 

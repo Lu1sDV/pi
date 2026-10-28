@@ -672,6 +672,47 @@ describe("AgentSession compaction characterization", () => {
 		expect(harness.eventsOfType("compaction_start")).toHaveLength(0);
 	});
 
+	it.each([
+		{ api: "openai-completions", adaptive: false, output: 32_000, retained: true },
+		{ api: "openai-completions", adaptive: false, output: 16_000, retained: false },
+		{ api: "anthropic-messages", adaptive: false, output: 34_048, retained: true },
+		{ api: "anthropic-messages", adaptive: false, output: 33_000, retained: false },
+		{ api: "anthropic-messages", adaptive: true, output: 32_000, retained: true },
+	] as const)(
+		"retains only exhausted OpenRouter output budgets ($api, adaptive=$adaptive, output=$output)",
+		async ({ api, adaptive, output, retained }) => {
+			const harness = await createHarness({
+				provider: "openrouter",
+				models: [{ id: "output-budget", contextWindow: 1_048_576, maxTokens: 943_718 }],
+			});
+			harnesses.push(harness);
+			harness.session.agent.state.model = {
+				...harness.getModel(),
+				api,
+				compat: { forceAdaptiveThinking: adaptive },
+			};
+			// Runtime budgets can differ from settings; recovery must use the same budgets as generation.
+			harness.session.agent.thinkingBudgets = { high: 2048 };
+			const assistant = createAssistant(harness, { stopReason: "length", totalTokens: 10 + output });
+			assistant.api = api;
+			assistant.thinkingLevel = "high";
+			assistant.content = [{ type: "text", text: "answer at the output limit" }];
+			assistant.usage.input = 10;
+			assistant.usage.output = output;
+			harness.sessionManager.appendMessage({ role: "user", content: "hello", timestamp: 0 });
+			harness.sessionManager.appendMessage(assistant);
+			harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
+
+			await (harness.session as unknown as SessionWithCompactionInternals)._checkCompaction(assistant);
+
+			const projectedAssistants = harness.sessionManager
+				.buildSessionContext()
+				.messages.filter((message) => message.role === "assistant");
+			expect(projectedAssistants).toEqual(retained ? [assistant] : []);
+			if (retained) expect(harness.eventsOfType("compaction_start")).toEqual([]);
+		},
+	);
+
 	it("stops after one compact-and-retry when a second response is also truncated", async () => {
 		const harness = await createHarness({
 			models: [{ id: "faux-1", contextWindow: 1_000_000, maxTokens: 100 }],

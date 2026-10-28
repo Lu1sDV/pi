@@ -1,4 +1,4 @@
-import { clampThinkingLevel } from "../models.ts";
+import { clampThinkingLevel, hasApi } from "../models.ts";
 import type {
 	Api,
 	Model,
@@ -11,9 +11,11 @@ import type {
 	TranscriptContext,
 } from "../types.ts";
 import { estimateContextTokens } from "../utils/estimate.ts";
+import { isOpenRouterModel } from "../utils/openrouter-cost.ts";
 
 const CONTEXT_SAFETY_TOKENS = 4096;
 const MIN_MAX_TOKENS = 1;
+const OPENROUTER_DEFAULT_MAX_TOKENS = 32_000;
 
 export function clampMaxTokensToContext(model: Model<Api>, context: TranscriptContext, maxTokens: number): number {
 	if (model.contextWindow <= 0) return Math.max(MIN_MAX_TOKENS, maxTokens);
@@ -33,6 +35,22 @@ export function resolveSamplingParams(
 		: undefined;
 }
 
+/** Default output ceiling before context clamping. Omit the thinking level to get the base budget. */
+export function getDefaultMaxTokens(
+	model: Model<Api>,
+	thinkingLevel: ModelThinkingLevel = "off",
+	thinkingBudgets?: ThinkingBudgets,
+): number {
+	// OpenRouter checks affordability against the requested ceiling, not the expected response length.
+	const maxTokens = isOpenRouterModel(model)
+		? Math.min(model.maxTokens, OPENROUTER_DEFAULT_MAX_TOKENS)
+		: model.maxTokens;
+	if (thinkingLevel !== "off" && hasApi(model, "anthropic-messages") && model.compat?.forceAdaptiveThinking !== true) {
+		return adjustMaxTokensForThinking(maxTokens, model.maxTokens, thinkingLevel, thinkingBudgets).maxTokens;
+	}
+	return maxTokens;
+}
+
 export function buildBaseOptions(
 	model: Model<Api>,
 	context: TranscriptContext,
@@ -43,7 +61,7 @@ export function buildBaseOptions(
 	return {
 		temperature: options?.temperature,
 		samplingParams,
-		maxTokens: clampMaxTokensToContext(model, context, options?.maxTokens ?? model.maxTokens),
+		maxTokens: clampMaxTokensToContext(model, context, options?.maxTokens ?? getDefaultMaxTokens(model)),
 		signal: options?.signal,
 		telemetry: options?.telemetry,
 		apiKey: apiKey || options?.apiKey,

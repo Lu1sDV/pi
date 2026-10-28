@@ -3,6 +3,7 @@ import { getModel, streamSimple } from "../src/compat.ts";
 import type { Context, Model, SimpleStreamOptions } from "../src/types.ts";
 
 interface AnthropicThinkingPayload {
+	max_tokens: number;
 	thinking?: { type: string; budget_tokens?: number; display?: string };
 	output_config?: { effort?: string };
 }
@@ -105,5 +106,32 @@ describe("Anthropic forceAdaptiveThinking compat override", () => {
 
 		expect(payload.thinking).toEqual({ type: "disabled" });
 		expect(payload.output_config).toBeUndefined();
+	});
+});
+
+describe("OpenRouter Anthropic output budgets", () => {
+	const model = { ...makeCustomModel(), provider: "openrouter", maxTokens: 64_000 };
+
+	it("does not reserve the full model capacity when thinking is disabled", async () => {
+		expect(await capturePayload(model)).toMatchObject({
+			max_tokens: 32_000,
+			thinking: { type: "disabled" },
+		});
+	});
+
+	it("adds budget-based thinking to the capped base output budget", async () => {
+		expect(await capturePayload(model, { reasoning: "medium" })).toMatchObject({
+			max_tokens: 40_192,
+			thinking: { type: "enabled", budget_tokens: 8192 },
+		});
+	});
+
+	it("keeps adaptive thinking within the capped response budget", async () => {
+		const adaptiveModel = { ...model, compat: { forceAdaptiveThinking: true } };
+		expect(await capturePayload(adaptiveModel, { reasoning: "medium" })).toMatchObject({
+			max_tokens: 32_000,
+			thinking: { type: "adaptive" },
+			output_config: { effort: "medium" },
+		});
 	});
 });

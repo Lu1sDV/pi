@@ -1043,6 +1043,10 @@ for (const block of response.content) {
 
 `xhigh` and `max` are model-specific, opt-in levels. Use `getSupportedThinkingLevels(model)` to determine whether a concrete model exposes either level; models such as GPT-5.6 can expose both.
 
+OpenRouter simple requests default to a base output budget of at most 32,000 tokens (or the model's smaller output limit), rather than reserving credits for its entire advertised output capacity. Budget-based thinking may add to this base; all simple requests still limit output to the estimated remaining context. Pass `maxTokens` explicitly, for example `{ maxTokens: 64000 }`, to opt into a larger response budget. This does not truncate the input context or change the model catalog's limits.
+
+The coding agent compares length stops with this intended budget, including budget-based thinking, before context clamping. Exhausting the default output budget alone does not trigger context-overflow recovery or omit the response from the next request's context.
+
 ### Provider-Specific Options (stream/complete)
 
 `models.stream()`/`complete()` accept the owning API's full option set. Use `hasApi()` to narrow a dynamically looked-up model to its API for full option typing:

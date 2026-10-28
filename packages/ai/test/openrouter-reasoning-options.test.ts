@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { getOpenRouterThinkingLevelMap } from "../catalog/sources/openrouter.ts";
 import { streamSimple } from "../src/api/openai-completions.ts";
-import type { Model, ThinkingLevelMap } from "../src/types.ts";
+import type { Model, SimpleStreamOptions, ThinkingLevelMap } from "../src/types.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
 const context = normalizeContext({
@@ -25,13 +25,13 @@ function openRouterModel(thinkingLevelMap?: ThinkingLevelMap): Model<"openai-com
 	};
 }
 
-async function capturePayload(model: Model<"openai-completions">, reasoning?: "low") {
-	let payload: { reasoning?: { effort?: string } } | undefined;
+async function capturePayload(model: Model<"openai-completions">, options: SimpleStreamOptions = {}) {
+	let payload: { reasoning?: { effort?: string }; max_tokens?: number; max_completion_tokens?: number } | undefined;
 	await streamSimple(model, context, {
 		apiKey: "test",
-		reasoning,
+		...options,
 		onPayload: (request) => {
-			payload = request as { reasoning?: { effort?: string } };
+			payload = request as NonNullable<typeof payload>;
 			throw new Error("payload captured");
 		},
 	}).result();
@@ -97,7 +97,7 @@ describe("OpenRouter mandatory reasoning payloads", () => {
 	});
 
 	it("still sends an explicitly selected supported effort", async () => {
-		expect(await capturePayload(openRouterModel(mandatoryMap), "low")).toMatchObject({
+		expect(await capturePayload(openRouterModel(mandatoryMap), { reasoning: "low" })).toMatchObject({
 			reasoning: { effort: "low" },
 		});
 	});
@@ -106,5 +106,57 @@ describe("OpenRouter mandatory reasoning payloads", () => {
 		expect(await capturePayload(openRouterModel())).toMatchObject({
 			reasoning: { effort: "none" },
 		});
+	});
+});
+
+describe("OpenRouter output budgets", () => {
+	it("does not reserve a context-sized output budget for Kimi by default", async () => {
+		const model = {
+			...openRouterModel(),
+			id: "moonshotai/kimi-k3.1-pro",
+			contextWindow: 1_048_576,
+			maxTokens: 943_718,
+			thinkingLevelMap: { max: "max" },
+		};
+		expect(await capturePayload(model, { reasoning: "max" })).toMatchObject({
+			max_completion_tokens: 32_000,
+			reasoning: { effort: "max" },
+		});
+	});
+
+	it("preserves an explicitly requested larger output budget", async () => {
+		const model = { ...openRouterModel(), contextWindow: 1_048_576, maxTokens: 943_718 };
+		expect(await capturePayload(model, { maxTokens: 64_000 })).toMatchObject({ max_completion_tokens: 64_000 });
+	});
+
+	it("respects a smaller model output limit", async () => {
+		expect(await capturePayload(openRouterModel())).toMatchObject({ max_completion_tokens: 4096 });
+	});
+
+	it("still leaves room for input and the context safety margin", async () => {
+		const model = { ...openRouterModel(), contextWindow: 10_000, maxTokens: 943_718 };
+		expect(await capturePayload(model)).toMatchObject({ max_completion_tokens: 5902 });
+	});
+
+	it("also caps custom providers using a regional OpenRouter endpoint", async () => {
+		const model = {
+			...openRouterModel(),
+			provider: "custom-openrouter",
+			baseUrl: "https://us.openrouter.ai/api/v1",
+			contextWindow: 1_048_576,
+			maxTokens: 943_718,
+			compat: { maxTokensField: "max_tokens" as const },
+		};
+		expect(await capturePayload(model)).toMatchObject({ max_tokens: 32_000 });
+	});
+
+	it("does not impose the OpenRouter credit reservation cap on other providers", async () => {
+		const model = {
+			...openRouterModel(),
+			provider: "openai",
+			contextWindow: 1_048_576,
+			maxTokens: 128_000,
+		};
+		expect(await capturePayload(model)).toMatchObject({ max_completion_tokens: 128_000 });
 	});
 });
